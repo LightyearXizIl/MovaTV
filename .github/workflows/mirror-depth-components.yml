@@ -1,0 +1,28 @@
+name: Mirror MovaTV depth components
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror-depth-components
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    if: github.repository == 'LightyearXizIl/MovaTV'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fill missing component assets and verify checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/mirror-depth-components.py
