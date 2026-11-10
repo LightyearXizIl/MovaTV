@@ -135,7 +135,7 @@ var providerCodeCategories = map[string]FailureCategory{
 	"bad_gateway":                      CategoryProviderUnavailable,
 	"internal":                         CategoryProviderUnavailable,
 	"failed_precondition":              CategoryInvalidParams,
-	// BeefAPI stable codes: internal failures without a reliable caller action
+	// BeefTV stable codes: internal failures without a reliable caller action
 	// stay explicitly unknown instead of inheriting a misleading HTTP 400.
 	"violation_fee.grok.csam":              CategoryModerationInput,
 	"count_token_failed":                   CategoryUnknown,
@@ -176,6 +176,7 @@ var providerCodeCategories = map[string]FailureCategory{
 	"image_reference_upload_failed":        CategoryProviderUnavailable,
 	"reference_media_upload_failed":        CategoryProviderUnavailable,
 	"reference_preupload_failed":           CategoryProviderUnavailable,
+	"reference_unavailable":                CategoryInputInaccessible,
 	"upscale_unavailable":                  CategoryProviderUnavailable,
 	"fal_billing_unavailable":              CategoryProviderUnavailable,
 	"invalid_upscale_source":               CategoryInvalidParams,

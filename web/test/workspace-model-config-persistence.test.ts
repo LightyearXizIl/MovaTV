@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import * as workspaceBootstrap from "../src/components/workspace/workspace-bootstrap-hydrator";
 import { localWorkspaceConfig } from "../src/lib/user-session";
-import { mergeManagedBeefAPICatalog } from "../src/pages/settings/channel-settings-pane";
+import { mergeManagedBeefTVCatalog } from "../src/pages/settings/channel-settings-pane";
 import { createModelChannel, defaultConfig, type AiConfig } from "../src/stores/use-config-store";
 import { createModelConfigRepository } from "../src/services/model-config-repository";
 
@@ -67,11 +67,11 @@ test("local-mode startup restores the local model config after the session", asy
         },
         restoreModelConfig: async () => {
             state.restoreCalls += 1;
-            state.videoModels = ["beefapi::seedance-2.0-fast"];
+            state.videoModels = ["beeftv::seedance-2.0-fast"];
         },
     });
 
-    expect(state).toEqual({ session: "local", videoModels: ["beefapi::seedance-2.0-fast"], restoreCalls: 1 });
+    expect(state).toEqual({ session: "local", videoModels: ["beeftv::seedance-2.0-fast"], restoreCalls: 1 });
 });
 
 test("local-mode startup still restores the canonical model config when browser session hydration fails", async () => {
@@ -159,7 +159,7 @@ test("model config repository keeps failed edits dirty and retries them on flush
         },
     });
     await repository.hydrate();
-    await repository.commit({ ...defaultConfig, textModel: "beefapi::gpt-5.6-sol" });
+    await repository.commit({ ...defaultConfig, textModel: "beeftv::gpt-5.6-sol" });
     expect(repository.getState()).toMatchObject({ status: "error", dirty: true });
     await repository.flush();
     expect(attempts).toBe(2);
@@ -181,7 +181,7 @@ test("model config repository refreshes revision after conflict and retries the 
         },
     });
     await repository.hydrate();
-    await repository.commit({ ...defaultConfig, videoModel: "beefapi::seedance-new" });
+    await repository.commit({ ...defaultConfig, videoModel: "beeftv::seedance-new" });
 
     expect(expectedRevisions).toEqual([2, 7]);
     expect(repository.getState()).toMatchObject({ status: "saved", revision: 8, dirty: false });
@@ -197,9 +197,9 @@ test("catalog refresh keeps pending manual provider edits across delayed read an
         ...defaultConfig,
         channels: [
             createModelChannel({
-                id: "beefapi",
+                id: "beeftv",
                 pinned: true,
-                credentialRef: "beefapi-enterprise",
+                credentialRef: "beeftv",
                 models: ["enterprise-image"],
                 modelProfiles: [{ model: "enterprise-image", capability: "image", protocol: "openai-image" }],
             }),
@@ -219,14 +219,14 @@ test("catalog refresh keeps pending manual provider edits across delayed read an
         ...defaultConfig,
         imageModel: "manual::draft-image",
         channels: [
-            createModelChannel({ id: "beefapi", pinned: true, models: ["stale-image"] }),
+            createModelChannel({ id: "beeftv", pinned: true, models: ["stale-image"] }),
             createModelChannel({ id: "manual", name: "第一次改名", apiKey: "manual-key", models: ["draft-image"] }),
         ],
     };
     const first = repository.commit(current);
     const catalogRefresh = (async () => {
         await catalogRead;
-        return mergeManagedBeefAPICatalog(current, serverCatalog);
+        return mergeManagedBeefTVCatalog(current, serverCatalog);
     })();
     current = {
         ...current,
@@ -243,11 +243,11 @@ test("catalog refresh keeps pending manual provider edits across delayed read an
 
     expect(merged.channels.find((channel) => channel.id === "manual")?.name).toBe("连接过程中的改名");
     expect(merged.channels.find((channel) => channel.id === "manual")?.models).toEqual(["draft-image", "extra-image"]);
-    expect(merged.channels.find((channel) => channel.id === "beefapi")?.models).toEqual(["enterprise-image"]);
+    expect(merged.channels.find((channel) => channel.id === "beeftv")?.models).toEqual(["enterprise-image"]);
     const lastWrite = writes[writes.length - 1];
     expect(lastWrite?.channels.find((channel) => channel.id === "manual")?.name).toBe("连接过程中的改名");
     expect(lastWrite?.channels.find((channel) => channel.id === "manual")?.models).toEqual(["draft-image", "extra-image"]);
-    expect(lastWrite?.channels.find((channel) => channel.id === "beefapi")?.models).toEqual(["enterprise-image"]);
+    expect(lastWrite?.channels.find((channel) => channel.id === "beeftv")?.models).toEqual(["enterprise-image"]);
     expect(writes.some((config) => config.channels.find((channel) => channel.id === "manual")?.name === "第一次改名")).toBe(true);
     expect(repository.getState()).toMatchObject({ dirty: false });
 });
@@ -268,3 +268,114 @@ test("model config repository does not save browser state before canonical hydra
     await pending;
     expect(writes).toBe(1);
 });
+
+// 外部同步触发重新读取时，用户在读取和保存过程中又改了两次：两次修改都要落盘，
+// 最后保存的是第二次的内容，不能被读回的旧快照清掉。
+test("edits made while a refresh is reading are saved, not dropped", async () => {
+    let stored: AiConfig = { ...defaultConfig, channels: [] };
+    let revision = 1;
+    const saved: string[] = [];
+    let releaseRead: (() => void) | null = null;
+    let releaseWrite: (() => void) | null = null;
+    let holdNextRead = false;
+    let holdNextWrite = false;
+    const repository = createModelConfigRepository({
+        read: async () => {
+            if (holdNextRead) {
+                holdNextRead = false;
+                await new Promise<void>((resolve) => { releaseRead = resolve; });
+            }
+            return { config: structuredClone(stored), revision, health: "ready", source: "builtin+local" };
+        },
+        write: async (config) => {
+            if (holdNextWrite) {
+                holdNextWrite = false;
+                await new Promise<void>((resolve) => { releaseWrite = resolve; });
+            }
+            stored = structuredClone(config);
+            saved.push(config.channels[0]?.name || "");
+            return { saved: true, revision: ++revision };
+        },
+    });
+    await repository.hydrate();
+    const edit = (name: string) => ({ ...defaultConfig, channels: [createModelChannel({ id: "c", name, apiKey: "k", models: ["m"] })] });
+
+    holdNextWrite = true;
+    const firstSave = repository.commit(edit("edit-A"));
+    holdNextRead = true;
+    const refresh = repository.hydrate();
+    const secondSave = repository.commit(edit("edit-B"));
+    releaseWrite?.();
+    await firstSave;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseRead?.();
+    const result = await refresh;
+    await secondSave;
+    await repository.flush();
+
+    expect(saved).toEqual(["edit-A", "edit-B"]);
+    expect(stored.channels[0]?.name).toBe("edit-B");
+    // 刷新等两次保存都完成后才读取，读到的就是 edit-B，没有遗留未保存的修改。
+    expect(result.config.channels[0]?.name).toBe("edit-B");
+    expect(repository.getState()).toMatchObject({ dirty: false, revision: 3 });
+});
+
+test("an edit made during the read itself is kept and the stale snapshot is not applied", async () => {
+    let stored: AiConfig = { ...defaultConfig, channels: [] };
+    let revision = 1;
+    let releaseRead: (() => void) | null = null;
+    let holdNextRead = false;
+    const repository = createModelConfigRepository({
+        read: async () => {
+            if (holdNextRead) {
+                holdNextRead = false;
+                await new Promise<void>((resolve) => { releaseRead = resolve; });
+            }
+            return { config: structuredClone(stored), revision, health: "ready", source: "builtin+local" };
+        },
+        write: async (config) => {
+            stored = structuredClone(config);
+            return { saved: true, revision: ++revision };
+        },
+    });
+    await repository.hydrate();
+    holdNextRead = true;
+    const refresh = repository.hydrate();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const save = repository.commit({ ...defaultConfig, channels: [createModelChannel({ id: "c", name: "during-read", apiKey: "k", models: ["m"] })] });
+    releaseRead?.();
+    const result = await refresh;
+    await save;
+    await repository.flush();
+    expect(result.supersededByLocalEdit).toBe(true);
+    expect(stored.channels[0]?.name).toBe("during-read");
+    expect(repository.getState()).toMatchObject({ dirty: false });
+});
+
+// 保存失败后外部同步触发刷新：那次没保存的修改不能被读回的旧配置覆盖，之后能补存。
+test("an edit whose save failed survives a refresh and is saved later", async () => {
+    let stored: AiConfig = { ...defaultConfig, channels: [createModelChannel({ id: "c", name: "old", apiKey: "k", models: ["m"] })] };
+    let revision = 1;
+    let failWrites = true;
+    const repository = createModelConfigRepository({
+        read: async () => ({ config: structuredClone(stored), revision, health: "ready", source: "builtin+local" }),
+        write: async (config) => {
+            if (failWrites) return { saved: false, revision };
+            stored = structuredClone(config);
+            return { saved: true, revision: ++revision };
+        },
+    });
+    await repository.hydrate();
+    await repository.commit({ ...defaultConfig, channels: [createModelChannel({ id: "c", name: "edit-A", apiKey: "k", models: ["m"] })] });
+    expect(repository.getState()).toMatchObject({ status: "error", dirty: true });
+    const refreshed = await repository.hydrate();
+    expect(refreshed.supersededByLocalEdit).toBe(true);
+    // 刷新结束会立刻重试一次（仍然失败）；故障恢复后再保存。
+    await repository.flush();
+    expect(stored.channels[0]?.name).toBe("old");
+    failWrites = false;
+    await repository.flush();
+    expect(stored.channels[0]?.name).toBe("edit-A");
+    expect(repository.getState()).toMatchObject({ dirty: false });
+});
+

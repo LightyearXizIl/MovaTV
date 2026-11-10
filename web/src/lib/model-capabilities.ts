@@ -1,4 +1,5 @@
-import { beefAPIImageContract } from "@/lib/beefapi-image-contracts";
+import { beefTVImageContract } from "@/lib/beeftv-image-contracts";
+import { channelForId } from "@/lib/channel-identity";
 import type { ModelProtocol } from "@/lib/model-protocols";
 import {
     defaultImageCapabilityConfig,
@@ -143,13 +144,13 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
 }
 
 export function modelCapabilityConfigFor(
-    config: { channels: Array<{ id: string; models: string[]; baseUrl?: string; credentialRef?: string; interfaceType?: ModelProtocol; modelProfiles?: Array<{ model: string; capability?: string; capabilityConfig?: ModelCapabilityConfig; protocol?: ModelProtocol; imageCapabilitiesVersion?: string; videoCapabilitiesVersion?: string }> }> },
+    config: { channels: Array<{ id: string; legacyIds?: string[]; models: string[]; baseUrl?: string; credentialRef?: string; interfaceType?: ModelProtocol; modelProfiles?: Array<{ model: string; capability?: string; capabilityConfig?: ModelCapabilityConfig; protocol?: ModelProtocol; imageCapabilitiesVersion?: string; videoCapabilitiesVersion?: string }> }> },
     model: string,
 ): ModelCapabilityConfig {
     const separator = model.indexOf("::");
     const channelId = separator >= 0 ? model.slice(0, separator) : "";
     const modelName = separator >= 0 ? model.slice(separator + 2) : model;
-    const channel = config.channels.find((item) => item.id === channelId) || config.channels.find((item) => item.models.includes(modelName));
+    const channel = channelForId(config.channels, channelId) || config.channels.find((item) => item.models.includes(modelName));
     // Older desktop config migrations can leave two entries for the same model:
     // a legacy operation-only array followed by the real capability object. The
     // first-match lookup silently selected the malformed legacy entry, so video
@@ -163,7 +164,7 @@ export function modelCapabilityConfigFor(
     const fallback = defaultModelCapabilityConfig(protocol, modelName);
     // Official gateway contracts also upgrade capabilities cached by older installs.
     try {
-        if (protocol === "openai-image" && beefAPIImageContract(modelName)?.fixedOutputs && ["beeftv.app", "beefapi.com", "enterprise.beefapi.com", "whatstoken.ai", "www.whatstoken.ai"].includes(new URL(channel?.baseUrl || "").hostname.toLowerCase())) return fallback;
+        if (protocol === "openai-image" && beefTVImageContract(modelName)?.fixedOutputs && ["beeftv.app", "whatstoken.ai", "www.whatstoken.ai"].includes(new URL(channel?.baseUrl || "").hostname.toLowerCase())) return fallback;
     } catch { /* Config without a public endpoint uses its stored capabilities. */ }
     if (!profile?.capabilityConfig) {
         alignDocumentedVideoRouteLimits(fallback.video, protocol, modelName, channel);

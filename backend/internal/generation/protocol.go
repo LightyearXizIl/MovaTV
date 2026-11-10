@@ -35,12 +35,21 @@ func DeclarativeProtocolPollPolicy(mode string) VideoPollPolicy {
 	if mode == "video" {
 		return DefaultVideoPollPolicy()
 	}
-	return VideoPollPolicy{
+	policy := VideoPollPolicy{
+		// An accepted asynchronous task remains queryable after a transient HTTP failure.
+		RetryTransient:    true,
+		Notify:            NotifyPollEvent,
 		Interval:          2500 * time.Millisecond,
-		MaxNotFoundMisses: 1,
+		MaxNotFoundMisses: 3,
 		MaxDownloadTries:  3,
 		Sleep:             SleepContext,
 	}
+	if mode == "image" {
+		// A channel that stays down must end the task with the real upstream
+		// error instead of polling until the image timeout.
+		policy.MaxTransientFailures = 6
+	}
+	return policy
 }
 
 func RunProtocolAdapterTaskWithPolicy(ctx context.Context, input Input, adapter protocol.Adapter, policy VideoPollPolicy) (map[string]interface{}, error) {
@@ -52,7 +61,7 @@ func RunProtocolAdapterTaskWithPolicy(ctx context.Context, input Input, adapter 
 	}
 	// create、poll、download 是同一个外部任务的三个阶段：任一阶段失败都向上返回真实错误，
 	// 不把“已提交但结果未知”伪装成成功，也不把下载失败降级成空结果。
-	request := ProtocolRequestFromInput(input)
+	request := ProtocolRequestFor(input, adapter)
 	taskID := ResumedProviderRequestID(ctx)
 	var created protocol.CreateResult
 	if taskID == "" {
@@ -141,6 +150,13 @@ func RunProtocolAdapterTaskWithPolicy(ctx context.Context, input Input, adapter 
 		}
 		body, err := ExecuteProtocolRequest(WithRequestKind(ctx, "poll"), input.Config, spec)
 		if err != nil {
+			var httpErr HTTPError
+			if input.Mode == "image" && errors.As(err, &httpErr) && httpErr.StatusCode == 404 {
+				// Losing an accepted image task's query endpoint does not prove
+				// that its model is missing or that generation failed. Video and
+				// audio keep their previous outcome: a repeated 404 ends the task.
+				return VideoPollOutcome{}, StatePendingError{TaskID: taskID, Cause: err}
+			}
 			return VideoPollOutcome{}, err
 		}
 		state, err := adapter.ParsePoll(ctx, protocol.PollContext{BaseURL: input.Config.BaseURL, Model: request.Model, Request: request, TaskID: taskID}, body)
@@ -190,7 +206,7 @@ func QueryProtocolAdapterVideoTask(ctx context.Context, input Input, adapter pro
 	if provider, ok := adapter.(protocol.ModuleProvider); ok {
 		return queryModuleProviderOnce(ctx, input, provider, taskID)
 	}
-	request := ProtocolRequestFromInput(input)
+	request := ProtocolRequestFor(input, adapter)
 	pollContext := protocol.PollContext{BaseURL: input.Config.BaseURL, Model: request.Model, Request: request, TaskID: taskID}
 	spec, err := adapter.BuildPoll(ctx, pollContext)
 	if err != nil {
@@ -224,7 +240,9 @@ func tryStreamingDeclarativeTextCreate(ctx context.Context, input Input, adapter
 	if input.Mode != "text" || !input.StreamText {
 		return nil, false, nil
 	}
-	wire := streamingTextWire(input.Config.InterfaceType)
+	// The resolved ID, not the saved one: a model still saved with a retired
+	// alias runs the same interface and must stream the same way.
+	wire := streamingTextWire(adapter.Metadata().ID)
 	if wire == "" {
 		return nil, false, nil
 	}
