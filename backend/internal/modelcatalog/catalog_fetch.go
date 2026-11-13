@@ -48,6 +48,8 @@ type catalogPayloadItem struct {
 	VideoCapabilities        json.RawMessage          `json:"video_capabilities"`
 	VideoCapabilitiesVersion string                   `json:"video_capabilities_version"`
 	VideoPricing             json.RawMessage          `json:"video_pricing"`
+	MediaCapabilities        json.RawMessage          `json:"media_capabilities"`
+	MediaCapabilitiesVersion string                   `json:"media_capabilities_version"`
 }
 
 type catalogPayloadParameters struct {
@@ -73,8 +75,13 @@ func NormalizeCatalogAPIFormat(apiFormat string) (string, error) {
 	return normalized, nil
 }
 
+// CatalogBaseURL 是读取模型目录前对 Base URL 的整理；设置页展示目录地址也先过这一步。
+func CatalogBaseURL(baseURL string) string {
+	return strings.TrimRight(strings.TrimSpace(baseURL), "/")
+}
+
 func ValidateCatalogRequest(baseURL, apiKey, apiFormat string) (string, string, string, error) {
-	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	baseURL = CatalogBaseURL(baseURL)
 	apiKey = strings.TrimSpace(apiKey)
 	if baseURL == "" {
 		return "", "", "", kernel.BadAuthRequest("请填写 Base URL")
@@ -163,6 +170,7 @@ func ParseChannelModelCatalog(data []byte, apiFormat string) ([]ChannelModelCata
 			ImageCapabilities: item.ImageCapabilities,
 			VideoCapabilities: item.VideoCapabilities,
 			VideoPricing:      item.VideoPricing,
+			MediaCapabilities: item.MediaCapabilities,
 		}
 		if version := strings.TrimSpace(item.ImageCapabilitiesVersion); version != "" || len(item.ImageCapabilities) > 0 {
 			copied := version
@@ -171,6 +179,10 @@ func ParseChannelModelCatalog(data []byte, apiFormat string) ([]ChannelModelCata
 		if version := strings.TrimSpace(item.VideoCapabilitiesVersion); version != "" || len(item.VideoCapabilities) > 0 {
 			copied := version
 			entry.VideoCapabilitiesVersion = &copied
+		}
+		if version := strings.TrimSpace(item.MediaCapabilitiesVersion); version != "" || len(item.MediaCapabilities) > 0 {
+			copied := version
+			entry.MediaCapabilitiesVersion = &copied
 		}
 		catalog = append(catalog, entry)
 	}

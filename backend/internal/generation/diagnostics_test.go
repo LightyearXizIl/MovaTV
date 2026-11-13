@@ -6,7 +6,7 @@ import (
 )
 
 func TestDiagnosticSummaryHidesMountedAndNetworkPaths(t *testing.T) {
-	for _, path := range []string{`/Volumes/PrivateDrive/customer-A/image.png`, `/Volumes/External Work/customer-A/image.png`, `C:\Private User\customer-A\image.png`, `\\Private Server\Private Share\customer-A\image.png`, `/mnt/PrivateDrive/customer-A/image.png`, `/media/PrivateDrive/customer-A/image.png`, `\\PrivateServer\PrivateShare\customer-A\image.png`} {
+	for _, path := range []string{`/Volumes/PrivateDrive/customer-A/image.png`, `/Volumes/External Work/customer-A/image.png`, `C:\Private User\customer-A\image.png`, `\\Private Server\Private Share\customer-A\image.png`, `/mnt/PrivateDrive/customer-A/image.png`, `/media/PrivateDrive/customer-A/image.png`, `/app/uploads/Private-customer-A/image.png`, `/data/uploads/Private-customer-A/image.png`, `/workspace/Private-customer-A/image.png`, `\\PrivateServer\PrivateShare\customer-A\image.png`} {
 		got := DiagnosticSummary("open " + path + ": permission denied")
 		if strings.Contains(got, "Private") || strings.Contains(got, "customer-A") || !strings.Contains(got, "permission denied") {
 			t.Fatalf("unsafe summary %q", got)
@@ -27,6 +27,12 @@ func TestDiagnosticSummaryDoesNotMangleHTTPURLsAsLocalPaths(t *testing.T) {
 		if !strings.Contains(got, "EOF") && !strings.Contains(got, "connection reset by peer") {
 			t.Fatalf("transport cause lost: %q -> %q", msg, got)
 		}
+		if strings.Contains(got, `Get "`) || strings.Contains(got, `Post "`) || strings.Contains(got, `Put "`) {
+			t.Fatalf("HTTP verb quote artifact leaked: %q -> %q", msg, got)
+		}
+	}
+	if got := DiagnosticSummary(`Put " context deadline exceeded`); got != "context deadline exceeded" {
+		t.Fatalf("dangling quote not cleaned: %q", got)
 	}
 	combined := DiagnosticSummary(`cannot read C:\Users\PRIVATE\image.png https://host/file?token=PRIVATE Authorization: Bearer PRIVATE multi word`)
 	if strings.Contains(combined, "PRIVATE") || !strings.Contains(combined, "[路径已隐藏]") {

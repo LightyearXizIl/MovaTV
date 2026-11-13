@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { MediaCapabilities } from "@/lib/media-capabilities";
+import { isDedicatedMediaToolCapability, type MediaCapabilities } from "@/lib/media-capabilities";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
@@ -13,7 +13,7 @@ import { defaultModelCapabilityConfig, upgradeGPTImageCapability, type ModelCapa
 import { useUserStore } from "@/stores/use-user-store";
 import type { CapabilitySpec } from "@/services/api/logical-models";
 import { seedancePortraitLabel, seedancePortraitModel, type VideoPriceQuote } from "@/lib/seedance-portrait";
-import { upgradeLL2ModelProfile } from "../../../plugin-packages/beeftv-plugin-ll2/client/index.js";
+import { upgradeBuiltinModelProfile } from "@/lib/builtin-service-presets";
 export { buildApiUrl, isSystemProxyBaseUrl, resolveBackendApiUrl, systemProxyChannelId } from "@/lib/channel-url";
 
 export type ApiCallFormat = "openai" | "gemini" | "claude";
@@ -493,7 +493,7 @@ function reconcileChannelModelProfiles(channel: ModelChannel): ModelChannel {
     if (!channel.modelProfiles?.length) return channel;
     let changed = false;
     const modelProfiles = channel.modelProfiles.map((raw) => {
-        const profile = (upgradeLL2ModelProfile(raw) as typeof raw) || raw, capability = modelProtocolCapability(profile.protocol);
+        const profile = (upgradeBuiltinModelProfile(raw) as typeof raw) || raw, capability = modelProtocolCapability(profile.protocol);
         if (profile !== raw) changed = true;
         return !capability || capability === profile.capability ? profile : ((changed = true), { ...profile, capability });
     });
@@ -508,6 +508,8 @@ function beefTVVideoCapabilityConfig(model: string, protocol: ModelProtocol, cur
     if (!limits) return profile;
     const resolved = profile || defaultModelCapabilityConfig(protocol, model);
     if (!resolved.video) return resolved;
+    const operations = contract.operations || resolved.video.operations;
+    const contractOpRefs = contract.operationReferences ? Object.fromEntries(Object.entries(contract.operationReferences).filter(([op]) => operations.includes(op))) : undefined;
     return { ...resolved, video: { ...resolved.video,
         resolutions: contract.resolutions || resolved.video.resolutions,
         defaultResolution: contract.resolutions?.includes(resolved.video.defaultResolution) ? resolved.video.defaultResolution : contract.resolutions?.[0] || resolved.video.defaultResolution,
@@ -516,8 +518,10 @@ function beefTVVideoCapabilityConfig(model: string, protocol: ModelProtocol, cur
         duration: contract.duration ? { ...resolved.video.duration, selection: "range", min: contract.duration.min, max: contract.duration.max, default: contract.duration.default } : resolved.video.duration,
         generateAudio: contract.generateAudio ? { ...resolved.video.generateAudio, supported: true } : resolved.video.generateAudio,
         references: { ...resolved.video.references, maxImages: Math.min(resolved.video.references.maxImages, limits.image ?? Infinity), maxVideos: Math.min(resolved.video.references.maxVideos, limits.video ?? Infinity), maxAudios: Math.min(resolved.video.references.maxAudios, limits.audio ?? Infinity) },
-        operations: contract.operations || resolved.video.operations,
+        operationReferences: resolved.video.operationReferences !== undefined ? resolved.video.operationReferences : contractOpRefs && Object.keys(contractOpRefs).length ? contractOpRefs : undefined,
+        operations,
         defaultOperation: contract.operations?.includes(resolved.video.defaultOperation) ? resolved.video.defaultOperation : contract.operations?.[0] || resolved.video.defaultOperation,
+        ...(contract.middleFrame && resolved.video.middleFrame === undefined ? { middleFrame: true } : {}),
     } };
 }
 
@@ -719,6 +723,7 @@ export function modelOptionsFromChannels(channels: ModelChannel[]) {
                 .filter(Boolean)
                 .filter((model) => !model.replace(/^\/+/, "").startsWith("topaz/upscale/"))
                 .filter((model) => !["topaz-standard-v2", "topaz-wonder-3.5", "topaz-proteus", "topaz-starlight-fast-2"].includes(model))
+                .filter((model) => !isDedicatedMediaToolCapability(channelModelProfile(channel, model)?.mediaCapabilities))
                 .filter((model) => channel.scope !== "system" || hasSystemModelProfile(channel, model))
                 .map((model) => encodeChannelModel(channel.id, model)),
         ),
@@ -745,11 +750,12 @@ export function normalizeModelOptionValue(value: unknown, channels: ModelChannel
 }
 
 export function resolveModelChannel(config: AiConfig, value: string) {
+    const channels = config.channels || [];
     const decoded = decodeChannelModel(value);
     const model = decoded?.model || value;
-    const lookup = channelLookup(config.channels);
+    const lookup = channelLookup(channels);
     const matched = decoded ? lookup.byId.get(decoded.channelId) : lookup.byModel.get(model);
-    return matched || config.channels[0] || createModelChannel({ id: "default", name: "默认渠道", baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, models: config.models.map(modelOptionName) });
+    return matched || channels[0] || createModelChannel({ id: "default", name: "默认渠道", baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, models: (config.models || []).map(modelOptionName) });
 }
 
 export function logicalModelIDForConfig(config: AiConfig) {

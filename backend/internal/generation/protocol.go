@@ -59,6 +59,12 @@ func RunProtocolAdapterTaskWithPolicy(ctx context.Context, input Input, adapter 
 	if provider, ok := adapter.(protocol.ModuleProvider); ok {
 		return runModuleProviderTask(ctx, input, provider, policy)
 	}
+	if ResumedProviderRequestID(ctx) == "" {
+		runtime, _ := RuntimeFromContext(ctx)
+		if err := prepareProtocolMediaUploads(ctx, strings.TrimSpace(runtime.Call.UserID), &input); err != nil {
+			return nil, err
+		}
+	}
 	// create、poll、download 是同一个外部任务的三个阶段：任一阶段失败都向上返回真实错误，
 	// 不把“已提交但结果未知”伪装成成功，也不把下载失败降级成空结果。
 	request := ProtocolRequestFor(input, adapter)
@@ -125,18 +131,23 @@ func RunProtocolAdapterTaskWithPolicy(ctx context.Context, input Input, adapter 
 			return nil, err
 		}
 		taskID = created.TaskID
-		if taskID == "" {
-			extracted, extractErr := ExtractProviderTaskID(body)
-			if extractErr != nil {
-				return nil, extractErr
+		if taskID == "" && (created.Status == protocol.StatusFailed || created.Status == protocol.StatusCancelled) {
+			if explicitID, _ := extractExplicitProviderJobID(body); explicitID != "" {
+				taskID = explicitID
 			}
-			taskID = extracted
 		}
 		if created.Status == protocol.StatusFailed || created.Status == protocol.StatusCancelled {
 			return nil, ProtocolResultError(created.Message, taskID, body)
 		}
 		if created.Status == protocol.StatusSucceeded {
 			return FinishProtocolAdapterResult(ctx, input, adapter, request, taskID, created.Result, policy)
+		}
+		if taskID == "" {
+			extracted, extractErr := ExtractProviderTaskID(body)
+			if extractErr != nil {
+				return nil, extractErr
+			}
+			taskID = extracted
 		}
 		if taskID == "" {
 			return nil, SubmissionUnknownError{Cause: errors.New("创建请求未返回可查询的任务 ID，请核对供应商任务记录")}
@@ -189,6 +200,29 @@ func ExtractProviderTaskID(body []byte) (string, error) {
 	for _, key := range []string{"data", "Response"} {
 		if data, ok := payload[key].(map[string]interface{}); ok {
 			nested, nestedErr := firstJSONString(data, "id", "task_id", "taskId", "TaskId", "request_id")
+			if nested != "" {
+				return nested, nil
+			}
+			if nestedErr != nil {
+				return "", nestedErr
+			}
+		}
+	}
+	return "", err
+}
+
+func extractExplicitProviderJobID(body []byte) (string, error) {
+	var payload map[string]interface{}
+	if json.Unmarshal(body, &payload) != nil {
+		return "", nil
+	}
+	id, err := firstJSONString(payload, "id", "task_id", "taskId", "TaskId", "name")
+	if id != "" {
+		return id, nil
+	}
+	for _, key := range []string{"data", "Response"} {
+		if data, ok := payload[key].(map[string]interface{}); ok {
+			nested, nestedErr := firstJSONString(data, "id", "task_id", "taskId", "TaskId")
 			if nested != "" {
 				return nested, nil
 			}
@@ -283,9 +317,9 @@ func tryStreamingDeclarativeTextCreate(ctx context.Context, input Input, adapter
 		return nil, true, err
 	}
 	taskID := created.TaskID
-	if taskID == "" {
-		if extracted, extractErr := ExtractProviderTaskID(data); extractErr == nil {
-			taskID = extracted
+	if taskID == "" && (created.Status == protocol.StatusFailed || created.Status == protocol.StatusCancelled) {
+		if explicitID, _ := extractExplicitProviderJobID(data); explicitID != "" {
+			taskID = explicitID
 		}
 	}
 	if created.Status == protocol.StatusFailed || created.Status == protocol.StatusCancelled {
@@ -294,6 +328,11 @@ func tryStreamingDeclarativeTextCreate(ctx context.Context, input Input, adapter
 	if created.Status == protocol.StatusSucceeded {
 		result, finishErr := FinishProtocolAdapterResult(ctx, input, adapter, request, taskID, created.Result, policy)
 		return result, true, finishErr
+	}
+	if taskID == "" {
+		if extracted, extractErr := ExtractProviderTaskID(data); extractErr == nil {
+			taskID = extracted
+		}
 	}
 	return nil, true, SubmissionUnknownError{Cause: errors.New("流式文本创建未返回最终结果")}
 }

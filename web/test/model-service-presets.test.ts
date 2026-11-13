@@ -1,10 +1,15 @@
 import { expect, test } from "bun:test";
-import { MODEL_SERVICE_PRESETS, createPluginServiceChannel, createServicePresetChannel, ll2ProtocolsAvailable, pluginServices, mergeSavedServiceChannel, presetCatalogFor, serviceConnectionError, serviceModelProfile, servicePresetFor, modelCatalogRequestURL } from "../src/lib/model-service-presets";
+import * as ReactNamespace from "react";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { applyFetchedChannelModelCatalog } from "../src/lib/channel-model-catalog";
+import { ModelLogo } from "../src/components/model-logo";
+import { MODEL_SERVICE_PRESETS, builtinPresetIntro, createPluginServiceChannel, createServicePresetChannel, ll2ProtocolsAvailable, ysduiProtocolsAvailable, pluginServices, mergeSavedServiceChannel, presetCatalogFor, serviceConnectionError, serviceModelProfile, servicePresetFor } from "../src/lib/model-service-presets";
 import { modelConnectionResultDetail, testChannelModelConnection } from "../src/lib/model-connection-test";
-import { applyFetchedChannelModelCatalog, modelConfigChannelStatusLabel } from "../src/pages/settings/channel-settings-pane";
+import { modelConfigChannelStatusLabel } from "../src/pages/settings/channel-settings-pane";
 import { backendProviderConfig } from "../src/services/api/generation-task";
 import { configWithoutCachedSecrets, createModelChannel, defaultConfig, normalizeConfigSnapshot } from "../src/stores/use-config-store";
-import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
+import { defaultModelCapabilityConfig, sanitizeServerImageCapability, sanitizeServerVideoCapability } from "../src/lib/model-capabilities";
 import { defaultProtocolForCapability, modelProtocolDefinition, type ModelProtocolDefinition } from "../src/lib/model-protocols";
 import { serviceCredentialGuide } from "../src/lib/service-credentials";
 import { toProviderDefinitions } from "../src/services/api/plugin-catalog";
@@ -142,7 +147,6 @@ test("a plugin interface that makes images and videos is one service, and both k
 test("connection validation rejects full endpoints and embedded credentials", () => {
     const channel = createModelChannel({ baseUrl: "https://api.example.com/v1", apiKey: "synthetic-key" });
     expect(serviceConnectionError(channel)).toBe("");
-    expect(modelCatalogRequestURL(channel)).toBe("https://api.example.com/v1/models");
     expect(serviceConnectionError({ ...channel, baseUrl: "https://api.example.com/v1/chat/completions" })).not.toBe("");
     expect(serviceConnectionError({ ...channel, baseUrl: "https://secret@api.example.com" })).not.toBe("");
     expect(serviceConnectionError({ ...channel, referenceAssetOrigin: "https://assets.example.com" })).toBe("");
@@ -227,7 +231,123 @@ test("official OpenAI and Gemini presets stop advertising discontinued video API
     }
     expect(presets.get("compatible")).toContain("中转");
     expect(presets.get("ll2")).toContain("视频");
+    expect(presets.get("ysdui")).toContain("视频");
     expect(presets.get("ark")).toContain("Seedance 视频");
+});
+
+test("Ysdui service preset resolves all 4 Ysdui protocols when plugin is enabled and fails closed when disabled", () => {
+    const ysduiProtocols = [
+        ...protocols,
+        { value: "ysdui-image", capability: "image", authType: "bearer", enabled: true } as ModelProtocolDefinition,
+        { value: "ysdui-image-task", capability: "image", authType: "bearer", enabled: true } as ModelProtocolDefinition,
+        { value: "ysdui-video", capability: "video", authType: "bearer", enabled: true } as ModelProtocolDefinition,
+    ];
+    expect(ysduiProtocolsAvailable(ysduiProtocols)).toBe(true);
+    expect(ysduiProtocolsAvailable(protocols)).toBe(false);
+
+    const channel = createServicePresetChannel("ysdui", "ysdui-test", ysduiProtocols);
+    const catalog = presetCatalogFor("ysdui");
+    const ysduiPreset = MODEL_SERVICE_PRESETS.find((item) => item.id === "ysdui");
+    expect(ysduiPreset?.icon).toBe("Ysdui");
+    expect(builtinPresetIntro("ysdui")).toBe("银盛通信有限公司成立于2002年，注册资本5亿元，国家高新技术企业。银盛·云枢壹算是银盛通信有限公司旗下企业级一站式AI服务平台，为企业提供算力支持以及AI产品解决方案。");
+    expect(builtinPresetIntro("ll2")).toBe("");
+    const renderedLogo = renderToStaticMarkup(createElement(ModelLogo, { icon: ysduiPreset?.icon, size: 24 }));
+    expect(renderedLogo).toContain('viewBox="0 0 1024 1024"');
+    expect(renderedLogo).toContain('fill="#005CD2"');
+    expect(renderedLogo).not.toContain("<mask");
+    expect(renderedLogo).not.toContain("<clipPath");
+    expect(servicePresetFor(channel)).toBe("ysdui");
+    expect(channel.name).toBe("银盛云枢壹算");
+    expect(channel.baseUrl).toBe("https://tokenhub.ysdui.cn");
+    expect(channel.models).toHaveLength(32);
+    expect(catalog).toHaveLength(32);
+    expect(channel.models).toEqual(expect.arrayContaining(["hy3", "hy-role", "hy-mt2-pro"]));
+
+    for (const profile of channel.modelProfiles || []) {
+        if (profile.capability === "image") {
+            expect(sanitizeServerImageCapability(profile.capabilityConfig?.image)).not.toBeNull();
+        } else if (profile.capability === "video") {
+            expect(sanitizeServerVideoCapability(profile.capabilityConfig?.video)).not.toBeNull();
+        }
+    }
+    const seedreamPro = channel.modelProfiles?.find((item) => item.model === "doubao-seedream-5-0-pro-260628");
+    expect(seedreamPro?.capabilityConfig?.image?.sequentialGeneration?.supported).toBe(false);
+    expect(seedreamPro?.capabilityConfig?.image?.transparentBackground?.supported).toBe(true);
+    const seedreamLite = channel.modelProfiles?.find((item) => item.model === "doubao-seedream-5-0-260128");
+    expect(seedreamLite?.capabilityConfig?.image?.sequentialGeneration?.supported).toBe(true);
+
+    const legacyYsduiChannel = createModelChannel({
+        id: "ysdui",
+        baseUrl: "https://tokenhub.ysdui.cn",
+        models: ["doubao-seedream-5-0-pro-260628", "doubao-seedance-2-0-fast-260128", "wand-vega-video-1.0-lite"],
+        modelProfiles: [
+            {
+                model: "doubao-seedream-5-0-pro-260628",
+                capability: "image",
+                protocol: "ysdui-image" as ModelProtocolDefinition["value"],
+                capabilityConfig: {
+                    version: 1,
+                    image: {
+                        ...defaultModelCapabilityConfig("openai-image", "fixture").image!,
+                        transparentBackground: { supported: false, default: false },
+                        sequentialGeneration: { supported: true, default: false },
+                    },
+                },
+            },
+            {
+                model: "doubao-seedance-2-0-fast-260128",
+                capability: "video",
+                protocol: "ysdui-video" as ModelProtocolDefinition["value"],
+                capabilityConfig: {
+                    version: 1,
+                    video: {
+                        ...defaultModelCapabilityConfig("newapi", "fixture").video!,
+                        resolutions: ["480P", "720P", "1080P"],
+                        defaultResolution: "1080P",
+                    },
+                },
+            },
+            {
+                model: "wand-vega-video-1.0-lite",
+                capability: "video",
+                protocol: "ysdui-video" as ModelProtocolDefinition["value"],
+                capabilityConfig: {
+                    version: 1,
+                    video: {
+                        ...defaultModelCapabilityConfig("newapi", "fixture").video!,
+                        resolutions: ["720P", "1080P"],
+                        defaultResolution: "720P",
+                    },
+                },
+            },
+        ],
+    });
+    const hydratedYsdui = normalizeConfigSnapshot({ config: { ...defaultConfig, channels: [legacyYsduiChannel] } }).config.channels[0];
+    expect(hydratedYsdui.modelProfiles?.[0]?.capabilityConfig?.image?.sequentialGeneration?.supported).toBe(false);
+    expect(hydratedYsdui.modelProfiles?.[0]?.capabilityConfig?.image?.transparentBackground?.supported).toBe(true);
+    expect(hydratedYsdui.modelProfiles?.[1]?.capabilityConfig?.video?.resolutions).toEqual(["480P", "720P"]);
+    expect(hydratedYsdui.modelProfiles?.[1]?.capabilityConfig?.video?.defaultResolution).toBe("720P");
+    expect(hydratedYsdui.modelProfiles?.[2]?.capabilityConfig?.video?.resolutions).toEqual(["768P", "1080P"]);
+    expect(hydratedYsdui.modelProfiles?.[2]?.capabilityConfig?.video?.defaultResolution).toBe("768P");
+
+    const resolvedProtocols = new Set(
+        catalog.map((item) => serviceModelProfile(channel, item, ysduiProtocols).protocol),
+    );
+    expect([...resolvedProtocols].sort()).toEqual([
+        "chat-completion",
+        "ysdui-image",
+        "ysdui-image-task",
+        "ysdui-video",
+    ]);
+
+    const unknownImage = serviceModelProfile(channel, { id: "custom-ysdui-image-model", modelType: "image" }, ysduiProtocols);
+    expect(unknownImage.protocol).toBeUndefined();
+
+    const withoutPlugin = catalog.map((item) => serviceModelProfile(channel, item, protocols));
+    expect(withoutPlugin.find((profile) => profile.capability === "text")?.protocol).toBe("chat-completion");
+    for (const mediaProfile of withoutPlugin.filter((profile) => profile.capability !== "text")) {
+        expect(mediaProfile.protocol).toBeUndefined();
+    }
 });
 
 test("LL2 service preset resolves all 6 LL2 protocols when plugin is enabled and fails closed when disabled", () => {
@@ -385,4 +505,60 @@ test("a retired interface is not offered again but still names a saved choice", 
     expect(definition.enabled).toBe(false);
     expect(defaultProtocolForCapability("video", [definition])).not.toBe("old-video");
     expect(modelProtocolDefinition("old-video", [definition])?.label).toBe("旧视频接口");
+});
+
+test("upgradeYsduiModelProfile preserves server-versioned capabilities and keeps user defaultResolution valid", async () => {
+    const { upgradeYsduiModelProfile } = await import("../../plugin-packages/beeftv-plugin-ysdui/client/presets.js");
+    const serverProfile = {
+        model: "doubao-seedream-5-0-pro-260628",
+        capability: "image",
+        protocol: "ysdui-image",
+        imageCapabilitiesVersion: "server-v2",
+        capabilityConfig: {
+            version: 1,
+            image: {
+                size: { parameter: "size", values: ["1:1"], default: "1:1" },
+                sequentialGeneration: { supported: true, default: false },
+            },
+        },
+    };
+    expect(upgradeYsduiModelProfile(serverProfile)).toBe(serverProfile);
+
+    const userVideoProfile = {
+        model: "wand-vega-video-1.0-lite",
+        capability: "video",
+        protocol: "ysdui-video",
+        capabilitySource: "user",
+        capabilityConfig: {
+            version: 1,
+            video: {
+                duration: { selection: "range", min: 4, max: 15, step: 1, default: 5 },
+                ratios: ["16:9"],
+                defaultRatio: "16:9",
+                resolutions: ["720P", "1080P"],
+                defaultResolution: "720P",
+                generateAudio: { supported: false, default: false },
+                watermark: { supported: false, default: false },
+                operations: ["text_to_video"],
+                defaultOperation: "text_to_video",
+            },
+        },
+    };
+    const migrated = upgradeYsduiModelProfile(userVideoProfile);
+    expect(migrated.capabilityConfig.video.resolutions).toEqual(["1080P"]);
+    expect(migrated.capabilityConfig.video.defaultResolution).toBe("1080P");
+
+    const ysduiClient = await import("../../plugin-packages/beeftv-plugin-ysdui/client/index.js");
+    let contributedComponent: ReactNamespace.ComponentType<Record<string, unknown>> | null = null;
+    ysduiClient.activate({
+        React: ReactNamespace,
+        contribute: (_slot: string, payload: { component: ReactNamespace.ComponentType<Record<string, unknown>> }) => {
+            contributedComponent = payload.component;
+            return () => undefined;
+        },
+    });
+    expect(contributedComponent).not.toBeNull();
+    const panelMarkup = renderToStaticMarkup(createElement(contributedComponent!, {}));
+    expect(panelMarkup).toContain('fill="#005CD2"');
+    expect(panelMarkup).toContain("银盛通信有限公司成立于2002年，注册资本5亿元，国家高新技术企业。");
 });
